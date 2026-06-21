@@ -128,7 +128,7 @@ client.on('interactionCreate', async interaction => {
 			const embed = buildFormEmbed(activeForm, null)
 				.setDescription(`Form cancelled`);
 
-			await interaction.message.edit({content: '~~<@ UW> Forming runs when a team can be filled!~~', embeds: [embed], components: [] });
+			await interaction.message.edit({content: '~~<@&1517308590484881508> Forming runs when a team can be filled!~~', embeds: [embed], components: [] });
 
 			activeForm = null;
 		}
