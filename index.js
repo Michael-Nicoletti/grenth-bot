@@ -79,7 +79,7 @@ client.on('interactionCreate', async interaction => {
 		const embed = buildFormEmbed(activeForm, null);
 		const row = buildJoinButton();
 
-		const reply = await interaction.reply({ content: '<@ UW> Forming runs when a team can be filled!', embeds: [embed], components: [row], fetchReply: true});
+		const reply = await interaction.reply({ content: '<@&1517308590484881508> Forming runs when a team can be filled!', embeds: [embed], components: [row], fetchReply: true});
 		activeForm.messageId = reply.id;
 
 		activeForm.expireTimer = setTimeout( () => expireForm(reply), 45*60*1000);
