@@ -1,8 +1,9 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, EmbedBuilder, Partials, MessageFlags } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, MessageFlags } = require('discord.js');
 const config = require('./config');
 const { buildFormEmbed } = require('./embedBuilder');
 const { findGroupAssignment } = require('./group-matcher');
+const { buildJoinButton } = require('./button-handler');
 
 let activeForm = null;
 
@@ -10,13 +11,10 @@ const client = new Client({
   intents: [
 	GatewayIntentBits.Guilds,
 	GatewayIntentBits.GuildMembers,
-	GatewayIntentBits.GuildMessageReactions,
-  ],
-  partials: [Partials.Message, Partials.Channel, Partials.Reaction],
+  ]
 });
 
-
-async function refreshForMessage(reactionMessage) {
+async function refreshFormMessage(reactionMessage) {
 	if(!activeForm) return;
 
 	const assignment = findGroupAssignment(config.requiredRoles, activeForm.members);
@@ -27,13 +25,19 @@ async function refreshForMessage(reactionMessage) {
 	if(assignment) {
 		console.log("Group formed", assignment);
 		activeForm.status = 'locked';
-		activeForm.expireForm.clearTimeout();
+		clearTimeout(activeForm.expireTimer);
 
-		await reactionMessage.reactions.removeAll().catch(err => 
-			console.log('Could not remove reactions: ',err)
-		);
+		await reactionMessage.edit({ embeds: [embed], components: [] });
+
+		const mentions = Object.values(assignment)
+			.map(member => `<@${member.id}>`)
+			.join(' ');
+		
+		await reactionMessage.channel.send(`A group has been formed ${mentions}`);
 
 		activeForm=null;
+	} else {
+		await reactionMessage.edit({ embeds: [embed], components: [buildJoinButton() ]});
 	}
 }
 
@@ -45,10 +49,7 @@ async function expireForm(message) {
 	const embed = buildFormEmbed(activeForm, null)
 		.setDescription('Form expired, role requirements not met');
 
-	await message.edit({ embeds: [embed] });
-	await message.reactions.removeAll().catch(err => 
-		console.error('Could not remove reactions', err)
-	);
+	await message.edit({ embeds: [embed], components: [] });
 
 	activeForm = null;
 }
@@ -60,76 +61,78 @@ client.once('ready', () => {
 
 client.on('interactionCreate', async interaction => {
 	console.log('interaction seen');
-	if(!interaction.isChatInputCommand()) return;
-	if(interaction.commandName === 'form') {
+	if(interaction.isChatInputCommand() && interaction.commandName === 'form') {
 
 		if(activeForm) { await interaction.reply({content: 'A form is already active. Either join that or wait until it closes to start a new one', flags: MessageFlags.Ephemeral }); return;}
 		
 		console.log('form sent');
-		const embed = new EmbedBuilder()
-			.setTitle("UWSC Form")
-			.setDescription("Tick up to join the run, the form will auto-expire in 30 minutes if roles are not filled")
-			.setColor(0x5865F2)
-			.setFooter({text: 'Started by '+interaction.user.username});
-
-		const reply = await interaction.reply({embeds: [embed], fetchReply: true});
-		await reply.react('✅');
 
 		activeForm = {
-			messageId: reply.id,
-			channelId: reply.channelId,
+			messageId: null,
+			channelId: interaction.channelId,
+			creatorId: interaction.user.id,
 			members: new Map(),
 			status: 'open', //locked, or closed when full, expired if it times out
 			expireTimer: null,
 		};
 
-		activeForm.expireTimer = setTimeout( () => expireForm(reply), 30*60*1000);
-	}
-});
+		const embed = buildFormEmbed(activeForm, null);
+		const row = buildJoinButton();
 
-client.on('messageReactionAdd', async (reaction, user) => {
-	if(reaction.partial) {
-		try{
-			console.log('waiting');
-			await reaction.fetch();
-		} catch(error) {
-			console.error('Failed to fetch reaction ',error);
+		const reply = await interaction.reply({ content: '<@ UW> Forming runs when a team can be filled!', embeds: [embed], components: [row], fetchReply: true});
+		activeForm.messageId = reply.id;
+
+		activeForm.expireTimer = setTimeout( () => expireForm(reply), 45*60*1000);
+
+		return;
+	}
+
+	if(interaction.isButton()) {
+		if(!activeForm || interaction.message.id !== activeForm.messageId) {
+			await interaction.reply({content: 'This form is no longer active.', flags: MessageFlags.Ephemeral });
 			return;
 		}
+
+		if(activeForm.status !== 'open') {
+			await interaction.reply({content: 'This form is closed', flags: MessageFlags.Ephemeral });
+			return;
+		}
+
+		if(interaction.customId === "toggle_join") {
+			const userId = interaction.user.id;
+			if(activeForm.members.has(userId)) {
+				activeForm.members.delete(userId);
+				await interaction.deferUpdate();
+			} else {
+				const member = await interaction.guild.members.fetch(userId);
+				const relevantRoles = member.roles.cache
+					.map(role => role.name)
+					.filter(roleName => config.requiredRoles.includes(roleName));
+
+				activeForm.members.set(userId, {
+					id: userId,
+					username: member.displayName,
+					roles: relevantRoles,
+				});
+				await interaction.deferUpdate();
+			}
+			await refreshFormMessage(interaction.message);
+		} else if (interaction.customId === "cancel_form") {
+			if(interaction.user.id !== activeForm.creatorId) {
+				await interaction.reply({ content: 'Only the person that started the form can cancel it', flags: MessageFlags.Ephemeral });
+				return;
+			}
+			clearTimeout(activeForm.expireTimer);				//Clear the timeout so that we are done with that
+			activeForm.status = 'cancelled';
+			
+			const embed = buildFormEmbed(activeForm, null)
+				.setDescription(`Form cancelled`);
+
+			await interaction.message.edit({content: '~~<@ UW> Forming runs when a team can be filled!~~', embeds: [embed], components: [] });
+
+			activeForm = null;
+		}
 	}
-
-	if(user.bot) return;
-	if(!activeForm || reaction.message.id !== activeForm.messageId) return;
-	if(reaction.emoji.name !== '✅') return;
-	if(activeForm.status !== 'open') return;			//No joining a closed form
-	
-
-	const guild = reaction.message.guild;
-	const member = await guild.members.fetch(user.id);
-
-	const relevantRoles = member.roles.cache
-		.map(role => role.name)
-		.filter(roleName => config.requiredRoles.includes(roleName));
-
-	activeForm.members.set(user.id, {
-		username: user.username,
-		roles: relevantRoles
-	});
-
-	console.log(`${user.username} joined with roles: ${relevantRoles.join(', ') || 'none'}`);
-	
-	await refreshForMessage(reaction.message);
-});
-
-client.on('messageReactionRemove', async (reaction, user) => {
-	if(user.bot) return;
-	if(!activeForm || reaction.message.id !== activeForm.messageId) return;
-	if(reaction.emoji.name !== '✅') return;
-
-	activeForm.members.delete(user.id);
-	console.log(`${user.username} left the form`);
-
-	await refreshForMessage(reaction.message);
 });
 
 client.login(process.env.DISCORD_TOKEN);

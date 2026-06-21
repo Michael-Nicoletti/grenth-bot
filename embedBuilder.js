@@ -1,6 +1,6 @@
 const {EmbedBuilder} = require('discord.js');
 
-function buildFormEmbed(activeForm, assignment = null) {
+function buildFormEmbed(activeForm, assignment = null) {	
 	const embed = new EmbedBuilder()
 		.setTitle("UWSC Form")
 		.setColor(assignment ? 0x57F287 : 0x5865F2);
